@@ -1,0 +1,60 @@
+# Virtual environments (each subproject has its own .venv)
+.venv/
+venv/
+env/
+ENV/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging (setuptools editable installs leave egg-info behind)
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+pip-wheel-metadata/
+*.whl
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Triton / PyTorch kernel caches
+.triton/
+.torch/
+.cache/
+
+# vLLM runtime artifacts
+~/.cache/vllm/
+nccl*.log
+
+# HuggingFace model cache (if placed locally)
+.hf_cache/
+hf_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Env & secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Logs
+*.log
+logs/
+
+# Coverage / test artifacts
+.coverage
+.pytest_cache/
+htmlcov/
