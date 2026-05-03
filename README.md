@@ -26,7 +26,8 @@ vllm_attn/
 │   ├── README.md                 # block_ptr 변형 자체의 안내 + caveat
 │   ├── BLOCK_PTR_MIGRATION.md    # ptr → block_ptr 변환에서 어려웠던 점
 │   └── ptr_vs_block_ptr_examples.ipynb   # 두 표현의 1:1 교환 가능성 사례
-└── colab_smoke_test.sh           # Colab 등 GPU 환경에서 12개 커널 일괄 검증
+├── colab_smoke_test.sh           # Colab 등 GPU 환경에서 12개 커널 일괄 검증
+└── colab_smoke_test.log          # 위 sh 의 참고 실행 결과 (Tesla T4, 12/12 PASS)
 ```
 
 모든 구현은 **Triton 커널** 로, Qwen3-0.6B 위에서 vLLM 의 공식
@@ -139,6 +140,11 @@ bash colab_smoke_test.sh
 ```
 
 상세 사용법은 스크립트 첫 부분 주석 참조.
+
+참고 실행 결과는 [`colab_smoke_test.log`](./colab_smoke_test.log) — Colab Tesla T4
+(torch 2.10.0+cu128, triton 3.6.0) 에서 12/12 PASS. `block_ptr/vllm_paged` 의
+`prefill/BS=8` 한 케이스만 의도적 SKIP (block_ptr prefill 의 `BLOCK_SIZE >= 16`
+제약 — `block_ptr/BLOCK_PTR_MIGRATION.md` §10 참조).
 
 ### VS Code / Cursor 에서
 
