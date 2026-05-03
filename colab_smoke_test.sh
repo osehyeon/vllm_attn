@@ -51,18 +51,18 @@ echo
 # ---- 2. 검증 대상 12개 sub-project ----------------------------------------
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 PROJECTS=(
-    "ptr/vllm_padded_decode"
-    "ptr/vllm_split"
-    "ptr/vllm_paged"
-    "ptr/vllm_multiseq"
-    "ptr/vllm_unified"
-    "ptr/vllm_varlen"
     "block_ptr/vllm_padded_decode"
     "block_ptr/vllm_split"
     "block_ptr/vllm_paged"
     "block_ptr/vllm_multiseq"
     "block_ptr/vllm_unified"
     "block_ptr/vllm_varlen"
+    "ptr/vllm_padded_decode"
+    "ptr/vllm_split"
+    "ptr/vllm_paged"
+    "ptr/vllm_multiseq"
+    "ptr/vllm_unified"
+    "ptr/vllm_varlen"
 )
 
 # ---- 3. 각각 실행 + 결과 집계 ----------------------------------------------
