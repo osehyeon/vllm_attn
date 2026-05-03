@@ -84,8 +84,10 @@ def _fwd_kernel_prefill_multiseq(
     kv_head_idx = q_head_idx // num_queries_per_kv
 
     S = tl.load(seq_lens + batch_idx)
-    q_start = tl.load(query_start_loc + batch_idx)
-    q_end = tl.load(query_start_loc + batch_idx + 1)
+    # Cast to int32 — make_block_ptr offsets only support 32-bit (Triton constraint).
+    # query_start_loc may be int64 (PyTorch cumsum default).
+    q_start = tl.load(query_start_loc + batch_idx).to(tl.int32)
+    q_end = tl.load(query_start_loc + batch_idx + 1).to(tl.int32)
     q_len = q_end - q_start
 
     offs_m_local = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)

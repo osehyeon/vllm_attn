@@ -358,6 +358,111 @@ tl.store(O_block_ptr, acc.to(io_dtype))
 
 ---
 
+## 9. (GPU 실측 발견) `make_block_ptr` offsets 는 int32만 허용
+
+### 무엇이 어려웠는가
+3개 sub-project (`vllm_multiseq`, `vllm_unified`, `vllm_varlen`) 의 prefill
+커널이 Colab T4 에서 컴파일 단계부터 죽었다:
+
+```
+AssertionError: Block pointers only support 32 bit `offsets/block_shape`,
+add a `.to(tl.int32)` or use regular indexing for 64 bit support
+```
+
+문제 위치: flat-packed Q 의 `make_block_ptr` 호출 (Snippet C).
+
+### 왜 어려운가
+호출 시 offsets 가 `(q_start + pid_m * BLOCK_M, 0)` 인데, `q_start = tl.load(query_start_loc + ...)` 의 dtype 이 텐서 dtype 그대로 따라간다. PyTorch 의
+`torch.cumsum` 은 입력이 int32 여도 **int64 를 반환**한다 (오버플로 방지
+default). 그래서 `query_start_loc` 가 자연스럽게 int64 로 만들어졌고, `q_start`
+도 int64. block_ptr offsets 는 int32 만 받는데 int64 를 넘겨서 컴파일 단계의
+assertion 에 막혔다.
+
+ptr/ 변형은 같은 int64 `q_start` 를 raw pointer arithmetic 으로 더하기 때문에
+(Triton 의 ptr+i64 indexing 은 well-defined) 문제 없이 통과했다. **block_ptr
+의 32-bit-offset 제약은 raw pointer 표현에는 없는 새 장벽.**
+
+정적 검증 (Darwin) 으로 못 잡은 이유: ast.parse / 시그니처 비교는 dtype 까지
+추적하지 않기 때문. 첫 GPU 실행에서야 드러남.
+
+### 어떻게 해결했는가
+커널 시작에서 `q_start`, `q_end` 를 `to(tl.int32)` 로 즉시 cast. 이후 모든
+산술 (`q_len = q_end - q_start`, `offsets=(q_start + pid_m * BLOCK_M, 0)`) 이
+int32 안에서 닫힌다.
+
+```python
+# 수정 후 — 3개 sub-project 모두 동일 패턴
+q_start = tl.load(query_start_loc + batch_idx).to(tl.int32)
+q_end   = tl.load(query_start_loc + batch_idx + 1).to(tl.int32)
+q_len   = q_end - q_start
+```
+
+대안 (wrapper 측에서 `query_start_loc.to(torch.int32)` 강제) 도 가능했지만,
+제약은 커널의 block_ptr API 에서 발생하므로 커널에서 명시적으로 다루는 쪽이
+정직. 또 wrapper signature 가 변하지 않아야 한다는 인터페이스 제약과도 일치.
+
+함정 — 토큰 수가 2³¹ 을 넘는 시퀀스 (≈ 21억) 에서는 int32 offset 이 오버플로
+하지만, 학습용 범위에서는 무시 가능. production 에서는 wrapper 가 사전
+검사로 거부해야 한다.
+
+---
+
+## 10. (GPU 실측 발견) paged prefill 의 `tl.dot` K≥16 제약 ↔ `BLOCK_N=BLOCK_SIZE` 강제 충돌
+
+### 무엇이 어려웠는가
+`block_ptr/vllm_paged` 의 smoke test 에 `BLOCK_SIZE=8` 케이스가 있었는데,
+prefill 만 컴파일 에러:
+
+```
+AssertionError: Input shapes should have M >= 1, N >= 1 and K >= 16
+  acc = acc + tl.dot(p.to(io_dtype), v, out_dtype=tl.float32)
+```
+
+### 왜 어려운가
+§2 의 `BLOCK_N := BLOCK_SIZE` 강제가 `BLOCK_SIZE < 16` 일 때 새 제약과 충돌:
+
+- prefill 은 `tl.dot(q, k_t)` 와 `tl.dot(p, v)` 를 쓴다. 두 dot 모두 K 축이
+  `BLOCK_N = BLOCK_SIZE`.
+- Triton 의 MMA codegen 은 `K >= 16` 을 요구 (NVIDIA Tensor Core MMA tile
+  최소 크기).
+- `BLOCK_SIZE=8` → `K=8 < 16` → 컴파일 단계에서 거부.
+
+ptr/ 변형은 `BLOCK_N` 이 dtype/head_dim heuristic 으로 결정되어 항상 ≥ 16
+이라 무사. **block_ptr 의 `BLOCK_N=BLOCK_SIZE` 강제 + Triton MMA K 최소
+크기 = 새 충돌.**
+
+decode 는 `tl.sum(p[:, None] * v, axis=0)` 를 쓰므로 K 제약 없음 — `BS=8` decode 는 정상 동작.
+
+### 어떻게 해결했는가
+prefill wrapper 에서 `BLOCK_SIZE >= 16` 을 명시적 assert 로 거부하고, smoke
+test 의 `varied block_size` 부분에서 `BS=8` 은 prefill 만 skip (decode 는
+유지):
+
+```python
+# wrapper
+BLOCK_SIZE = key_cache.shape[1]
+assert BLOCK_SIZE >= 16, (
+    f"block_ptr paged prefill requires BLOCK_SIZE >= 16 (tl.dot K constraint), got {BLOCK_SIZE}"
+)
+
+# smoke test
+for bs in (8, 16, 32, 64):
+    if bs >= 16:
+        results.append(_check_prefill(torch.float16, 128, bs, 1e-2, f"prefill/BS={bs}"))
+    else:
+        print(f"  prefill/BS={bs}                       SKIP (block_ptr prefill needs BS>=16)")
+    results.append(_check_decode(torch.float16, 128, bs, 1e-2, f"decode/BS={bs}"))
+```
+
+함정 — vLLM production 에서는 `block_size=16` 이 기본값이라 이 충돌이 거의
+드러나지 않는다. 학습용 smoke test 에서 의도적으로 `BS=8` 까지 검증했기
+때문에 발견. 만약 프로젝트가 더 작은 `block_size` 를 지원해야 한다면, paged
+prefill 을 `BLOCK_N = max(BLOCK_SIZE, 16)` 로 두고 한 iter 에 여러 logical
+block 을 합쳐 처리하는 패턴이 필요한데 — 그건 §1 에서 피한 gather 패턴으로
+다시 들어가는 것. 현 학습 범위에서는 단순한 assert 가 정답.
+
+---
+
 ## 정리 — 변환 패턴 요약 (cheat sheet)
 
 | 원본 패턴 | 변환 |
@@ -369,6 +474,8 @@ tl.store(O_block_ptr, acc.to(io_dtype))
 | `tl.advance` | non-paged에서만. paged는 매 iter 새 `make_block_ptr` (advance 불가) |
 | `block_table`, `seq_lens`, `_find_seq_idx` 등 스칼라 로드 | **변환 안 함 — raw pointer 유지** (block_ptr은 tile I/O 전용) |
 | 1-D Q/O (decode) | 1-D `make_block_ptr` (`block_shape=(D,)`, `order=(0,)`) — boundary_check 불필요 |
+| int64 인덱스 (`q_start = tl.load(query_start_loc)`) | block_ptr offsets는 int32 강제 → **`.to(tl.int32)` cast 필수** (ptr/ 변형은 무관) |
+| paged prefill 의 `BLOCK_N=BLOCK_SIZE` | `tl.dot` K≥16 제약 때문에 **`BLOCK_SIZE >= 16` 강제** (decode는 무관) |
 
 ## 최종 caveat (반복)
 

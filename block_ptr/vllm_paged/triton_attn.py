@@ -314,6 +314,11 @@ def triton_attention_prefill_paged(
         scale = 1.0 / math.sqrt(D)
 
     BLOCK_SIZE = key_cache.shape[1]
+    # Prefill uses tl.dot(q, k_t) and tl.dot(p, v) where K = BLOCK_N = BLOCK_SIZE.
+    # Triton's MMA codegen requires K >= 16. Decode path (tl.sum reduction) has no such limit.
+    assert BLOCK_SIZE >= 16, (
+        f"block_ptr paged prefill requires BLOCK_SIZE >= 16 (tl.dot K constraint), got {BLOCK_SIZE}"
+    )
     BLOCK = _cap_block_for_head_dim(_get_block_size(q.dtype), D)
     grid = (B * Hq, triton.cdiv(S, BLOCK))
     n_rep = Hq // Hkv
@@ -464,10 +469,14 @@ if __name__ == "__main__":
         for kv_len in (32, 128, 1024):
             results.append(_check_decode(dtype, kv_len, 16, atol, f"{str(dtype).split('.')[-1]}/S={kv_len}/BS=16"))
 
-    # Different block sizes to check paged indexing
+    # Different block sizes to check paged indexing.
+    # NOTE: prefill requires BLOCK_SIZE >= 16 (tl.dot K constraint); decode (tl.sum) has no limit.
     print("varied block_size (fp16, S=128, D=128)")
     for bs in (8, 16, 32, 64):
-        results.append(_check_prefill(torch.float16, 128, bs, 1e-2, f"prefill/BS={bs}"))
+        if bs >= 16:
+            results.append(_check_prefill(torch.float16, 128, bs, 1e-2, f"prefill/BS={bs}"))
+        else:
+            print(f"  prefill/BS={bs}                       SKIP (block_ptr prefill needs BS>=16)")
         results.append(_check_decode(torch.float16, 128, bs, 1e-2, f"decode/BS={bs}"))
 
     print("ALL PASS" if all(results) else "SOMETHING FAILED")

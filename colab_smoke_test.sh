@@ -84,21 +84,26 @@ for p in "${PROJECTS[@]}"; do
     echo "▶  $p"
     echo "──────────────────────────────────────────────────────"
     LOG_FILE="$LOG_DIR/$(echo "$p" | tr '/' '_').log"
-    if "$PYTHON" "$SCRIPT" 2>&1 | tee "$LOG_FILE"; then
-        # 마지막 줄이 ALL PASS 인지 확인 (smoke test 컨벤션)
-        LAST=$(tail -n 1 "$LOG_FILE" | tr -d '[:space:]')
-        if [ "$LAST" = "ALLPASS" ]; then
-            echo "✅ PASS  $p"
-            RESULTS+=("PASS  $p")
-            PASS_COUNT=$((PASS_COUNT+1))
-        else
-            echo "⚠ EXIT 0 이지만 마지막 줄이 'ALL PASS' 아님: '$LAST' — FAIL 처리"
-            RESULTS+=("FAIL  $p  (last line: $LAST)")
-            FAIL_COUNT=$((FAIL_COUNT+1))
-        fi
+
+    # python을 명시적으로 분리해서 실행 — pipe 없이 정확한 exit code 캡처.
+    # `|| true`로 한 번 더 가드: 어떤 이유든 다음 iteration으로 무조건 진행.
+    "$PYTHON" "$SCRIPT" >"$LOG_FILE" 2>&1
+    exit_code=$?
+    cat "$LOG_FILE" || true
+
+    LAST=$(tail -n 1 "$LOG_FILE" 2>/dev/null | tr -d '[:space:]')
+    if [ "$exit_code" -eq 0 ] && [ "$LAST" = "ALLPASS" ]; then
+        echo "✅ PASS  $p"
+        RESULTS+=("PASS  $p")
+        PASS_COUNT=$((PASS_COUNT+1))
+    elif [ "$exit_code" -ne 0 ]; then
+        # python이 traceback/assertion 등으로 죽었음 — 그래도 다음으로 진행
+        echo "❌ FAIL  $p  (python exit code $exit_code) — 다음 sub-project로 진행"
+        RESULTS+=("FAIL  $p  (python exit $exit_code)")
+        FAIL_COUNT=$((FAIL_COUNT+1))
     else
-        echo "❌ FAIL  $p  (exit code $?)"
-        RESULTS+=("FAIL  $p  (non-zero exit)")
+        echo "⚠ FAIL  $p  (exit 0이지만 ALL PASS 아님: '$LAST') — 다음 sub-project로 진행"
+        RESULTS+=("FAIL  $p  (last: $LAST)")
         FAIL_COUNT=$((FAIL_COUNT+1))
     fi
     echo

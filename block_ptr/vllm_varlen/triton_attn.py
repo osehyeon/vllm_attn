@@ -113,8 +113,10 @@ def _fwd_kernel_varlen(
     q_block_local_idx = q_block_global_idx - seq_block_start
 
     # Per-sequence info
-    q_start = tl.load(query_start_loc + seq_idx)
-    q_end = tl.load(query_start_loc + seq_idx + 1)
+    # Cast to int32 — make_block_ptr offsets only support 32-bit (Triton constraint).
+    # query_start_loc may be int64 (PyTorch cumsum default).
+    q_start = tl.load(query_start_loc + seq_idx).to(tl.int32)
+    q_end = tl.load(query_start_loc + seq_idx + 1).to(tl.int32)
     q_len = q_end - q_start
     S = tl.load(seq_lens + seq_idx)
 
