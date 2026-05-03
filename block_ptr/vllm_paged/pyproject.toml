@@ -1,0 +1,20 @@
+[project]
+name = "my-paged-backend-block"
+version = "0.1.0"
+description = "vLLM Triton attention plugin — paged KV read inside the kernel (vLLM v0 style) (block_ptr variant)"
+requires-python = ">=3.10"
+dependencies = [
+    "vllm==0.19.1",
+    "triton>=3.0",
+    "torch",
+]
+
+[project.entry-points."vllm.general_plugins"]
+my_paged_backend_block = "triton_attention_backend:register"
+
+[tool.setuptools]
+py-modules = ["triton_attn", "triton_attention_backend"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
