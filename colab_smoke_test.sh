@@ -33,10 +33,19 @@ nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader ||
 echo
 
 PYTHON="${PYTHON:-python3}"
-if ! "$PYTHON" -c "import torch, triton" 2>/dev/null; then
-    echo "ℹ torch / triton 미설치 — pip로 설치 시도"
-    "$PYTHON" -m pip install --quiet torch triton || {
-        echo "❌ torch/triton 설치 실패"; exit 1;
+TORCH_CUDA_INDEX="https://download.pytorch.org/whl/cu128"
+
+# torch는 CUDA 12.8 빌드로 고정. 기존 torch의 CUDA가 12.8이 아니면 재설치.
+existing_cuda=$("$PYTHON" -c "import torch; print(torch.version.cuda or '')" 2>/dev/null || echo "")
+if [ "$existing_cuda" != "12.8" ]; then
+    [ -n "$existing_cuda" ] && echo "ℹ 기존 torch CUDA=$existing_cuda — cu128로 재설치"
+    "$PYTHON" -m pip install --quiet --index-url "$TORCH_CUDA_INDEX" torch || {
+        echo "❌ torch (cu128) 설치 실패"; exit 1;
+    }
+fi
+if ! "$PYTHON" -c "import triton" 2>/dev/null; then
+    "$PYTHON" -m pip install --quiet triton || {
+        echo "❌ triton 설치 실패"; exit 1;
     }
 fi
 "$PYTHON" -c "
@@ -44,6 +53,7 @@ import torch, triton
 print(f'  torch  : {torch.__version__}  CUDA: {torch.version.cuda}  available: {torch.cuda.is_available()}')
 print(f'  triton : {triton.__version__}')
 assert torch.cuda.is_available(), 'CUDA 사용 불가 — GPU 런타임 활성화 필요'
+assert torch.version.cuda == '12.8', f'torch CUDA 12.8 고정 — 실제: {torch.version.cuda}'
 "
 [ $? -ne 0 ] && exit 1
 echo

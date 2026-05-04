@@ -1,0 +1,20 @@
+[project]
+name = "my-block-ptr-split-v2-backend"
+version = "0.1.0"
+description = "vLLM Triton attention plugin — split-KV decode (block_ptr variant of vllm_split_v2)"
+requires-python = ">=3.10"
+dependencies = [
+    "vllm==0.19.1",
+    "triton>=3.0",
+    "torch",
+]
+
+[project.entry-points."vllm.general_plugins"]
+my_block_ptr_split_v2_backend = "triton_attention_backend:register"
+
+[tool.setuptools]
+py-modules = ["triton_attn", "triton_attention_backend"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"

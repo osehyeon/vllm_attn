@@ -212,6 +212,123 @@ upstream production 패턴이 아님 (`block_ptr/README.md` caveat 섹션 참조
 
 ---
 
+## 참고: 아키텍처별 하드웨어 한도와 기능
+
+각 sub-project `triton_attn.py` 의 `_get_block_size` / `_cap_block_for_head_dim` 는
+SMEM 한도에 맞춰 타일을 자른다. SMEM 만이 아니라 register 파일 / Tensor Core 세대 /
+async copy / TMA 같은 기능 가용성도 커널 튜닝의 1차 변수이므로 함께 정리한다.
+
+### 자원 한도
+
+| Arch | CC | 대표 GPU | carveout | L1 (KB)† | SMEM 최대 (KB) | per-block 동적 SMEM (KB) | regs/SM | warps/SM | threads/SM | SMs‡ |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Maxwell | 5.0 | GTX 750 Ti | ✗ | 24 | 64 | 48 | 64K | 64 | 2048 | 5 |
+| Maxwell | 5.2 | M40, GTX 9xx | ✗ | 48 | 96 | 48 | 64K | 64 | 2048 | 24 |
+| Pascal | 6.0 | P100 | ✗ | 24 | 64 | 48 | 64K | 64 | 2048 | 56 |
+| Pascal | 6.1 | GTX 10xx, P40 | ✗ | 48 | 96 | 48 | 64K | 64 | 2048 | 30 |
+| Volta | 7.0 | V100 | ✓ | 32 | 96 | 96 | 64K | 64 | 2048 | 80 |
+| Turing | 7.5 | **T4**, RTX 20xx | ✓ | 32 | 64 | 64 | 64K | 32 | 1024 | **40** |
+| **Ampere (DC)** | **8.0** | **A100** | ✓ | 28 | **164** | **163** | 64K | **64** | **2048** | **108** |
+| Ampere | 8.6 | RTX 3090, **A40** | ✓ | 28 | 100 | 99 | 64K | 48 | 1536 | **84** |
+| Ampere (Orin) | 8.7 | Jetson Orin | ✓ | 28 | 164 | 163 | 64K | 48 | 1536 | 16 |
+| **Ada Lovelace** | **8.9** | RTX 4090, **L40**, L4 | ✓ | 28 | **100** | **99** | 64K | **48** | **1536** | **142** |
+| **Hopper** | **9.0** | **H100 SXM**, H200 | ✓ | 28 | **228** | **227** | 64K | **64** | **2048** | **132** |
+| Blackwell (DC) | 10.0 | **B200**, GB200 | ✓ | 28 | 228 | 227 | 64K | 64 | 2048 | 148 |
+| Blackwell (consumer) | 12.0 | RTX 5090 | ✓ | 28 | 100 | 99 | 64K | 48 | 1536 | 170 |
+
+(이 저장소는 cc 8.0+ 만 지원. 7.x 이전 행은 코드의 `cc >= 8` 분기 / SMEM 점프 지점을
+이해하기 위한 참고용.)
+
+† **carveout = ✓** 인 아키텍처에서 L1 칸은 SMEM 을 최대로 잡았을 때 L1 에 남는 **최소량**
+(= 강제 L1 reserve). 다른 carveout 단계에서는 L1 을 더 크게, SMEM 을 더 작게 둘 수 있다.
+**carveout = ✗** 인 Maxwell/Pascal 은 L1 과 SMEM 이 **물리적으로 분리된 별도 SRAM** 이라
+이 두 값이 서로 독립.
+
+‡ **SMs** 는 **굵게 표시한 대표 GPU 의 SM 개수** (같은 cc 라도 SKU 별로 ±20% 변동
+가능). chip 전체 throughput = per-SM spec × SMs.
+
+- **carveout = ✗ (Maxwell/Pascal) 의 SMEM gap**: per-SM SMEM 이 96 KB 인데 per-block
+  동적 SMEM 이 48 KB 에 묶이는 건, **`cudaFuncAttributeMaxDynamicSharedMemorySize` opt-in
+  메커니즘이 Volta (7.0) 에서 처음 도입**되었기 때문. Maxwell/Pascal 에는 그 API 자체가 없어
+  block 한 개가 들고갈 수 있는 SMEM 이 정적/동적 통합 48 KB 로 fix. 96 KB 의 나머지 절반은
+  "여러 block 이 SM 에 동시 거주하면서 각자 ≤48 KB 씩 나눠 쓰는 용도" 로 의도된 것 — 즉
+  **다중 block resident → 높은 occupancy** 가 그 시기 NVIDIA 의 디폴트 전략. Volta 에서
+  큰 tile 을 쓰는 딥러닝 커널 수요로 인해 opt-in 으로 single-block 한도를 풀어 줌.
+- **carveout = ✓** 에서 L1/SMEM 은 같은 물리 SRAM 을 분점 → 한쪽이 늘면 다른 쪽이 줄어듦.
+  Triton 컴파일러가 SMEM 사용량을 보고 적절한 carveout 단계를 driver 에 자동 요청.
+- **48 KB 정적 SMEM** 한도는 모든 아키텍처 공통. 그 이상은 동적 할당 + opt-in
+  (`cudaFuncSetAttribute(...)`) 가 필요한데 Volta 이후로만 가능.
+- **최대 threads/block** = 1024 (Fermi 이후 불변), **warp size** = 32 (전 세대 공통).
+- **regs/SM = 64K (32-bit register)** 가 Kepler 3.5 이후 모든 아키텍처에서 동일.
+  block 당 max regs 는 256 → 한 thread 가 256 regs 쓰면 SM 당 256 threads (8 warp) 까지만
+  거주 가능. occupancy 의 또 다른 1차 제약.
+- **warps/SM** 은 SM 의 4 quadrant scheduler 에서 결정 — V100/A100/H100/B200 은 quadrant
+  당 16 (총 64), 8.6/8.9/12.0 은 quadrant 당 12 (총 48), Turing 은 quadrant 당 8 (총 32) 로
+  가장 슬림. 같은 면적을 RT core / 2세대 Tensor Core 에 할당한 trade-off.
+
+### Tensor Core 와 dtype 지원
+
+| Arch | CC | TC 세대 | 지원 dtype (TC 경유) | 비고 |
+|---|---|---|---|---|
+| Volta | 7.0 | 1세대 | fp16 | `mma.sync` 도입, fp32 누산 |
+| Turing | 7.5 | 2세대 | fp16, int8, int4, int1 | INT 정밀도 추가, RT core |
+| Ampere | 8.0/8.6/8.7 | 3세대 | fp16, **bf16**, **tf32**, int8/4/1 | sparsity 2:4, BF16/TF32 데뷔 |
+| Ada Lovelace | 8.9 | 4세대 | fp16, bf16, **fp8 (E4M3/E5M2)** | FP8 데뷔 (consumer 라인) |
+| Hopper | 9.0 | 4세대 | fp16, bf16, fp8, tf32 | **wgmma**, async pipeline |
+| Blackwell | 10.0/12.0 | 5세대 | fp16, bf16, fp8, **fp6, fp4 (E2M1)** | `tcgen05.mma`, FP4/FP6 데뷔 |
+
+이 저장소의 커널은 `tl.dot` 으로 fp16/bf16 만 사용 (3세대 이상이면 충분).
+
+### 메모리/동기화 기능 도입 시점
+
+| 기능 | 도입 | 의미 |
+|---|---|---|
+| `cp.async` | Ampere (8.0) | global → SMEM 비동기 적재. **Triton software pipeline 의 토대** |
+| async barrier (`mbarrier`) | Ampere (8.0) | thread block 내 비동기 동기화 |
+| **TMA** (Tensor Memory Accelerator) | Hopper (9.0) | 다차원 텐서 단위 비동기 적재. `tl.make_block_ptr` 의 백엔드 일부 |
+| **DSMEM** (Distributed SMEM) | Hopper (9.0) | thread block cluster 내 SM 간 직접 SMEM 접근 |
+| Thread Block Cluster | Hopper (9.0) | grid 위에 cluster 단위, 최대 16 block 묶음 |
+| **TMEM** (Tensor Memory) | Blackwell (10.0) | Tensor Core 전용 256 KB 메모리, **SMEM 과 분리** |
+| `tcgen05.mma` | Blackwell (10.0) | TMEM 기반 5세대 비동기 MMA |
+
+### 코드의 cap 공식과 연결
+
+`_cap_block_for_head_dim` 의
+
+```
+block × head_dim × dtype_size × ~4 buffers  ≈  64 KB
+```
+
+는 **Turing 의 64 KB per-block 한도** 까지 안전하게 맞추는 lowest common denominator
+방침이다. 그래서 코드는 `cc >= 8` 분기에서도 base 를 128 까지만 올리고 (164 KB 한도의
+A100/A40 에선 절반 이하만 사용), head_dim 이 커지면 그에 반비례해 block 을 추가로 깎는다.
+
+Ampere+ 전용으로 튜닝한다면 cap 을 한 단계씩 풀어 더 큰 타일을 시도할 여지가 있다 — 다만:
+- 한도까지 꽉 채우면 SMEM 점유 → resident block 수 감소 → warp 수 감소 → latency hiding
+  약화. 보통 한도의 **50~70%** 가 실측 최적
+- regs/thread 도 같이 봐야 함. SMEM 만 줄여도 regs 가 압박하면 occupancy 안 올라감
+- Hopper 이상이면 TMA + wgmma 로 같은 SMEM 안에서 더 많은 산술 throughput 을 짜낼 수 있음
+
+### 자기 GPU 확인
+
+```bash
+nvidia-smi --query-gpu=name,compute_cap --format=csv
+```
+
+또는 PyTorch 에서:
+
+```python
+import torch
+torch.cuda.get_device_capability(0)   # (major, minor)
+torch.cuda.get_device_properties(0)   # 전체 스펙 dump
+```
+
+`get_device_properties` 는 `total_memory`, `multi_processor_count`,
+`shared_memory_per_block`, `shared_memory_per_block_optin`, `regs_per_block`,
+`max_threads_per_multi_processor` 를 모두 포함하므로 위 표를 자기 GPU 로 검증할 때 유용.
+
+---
+
 ## 학습 경로 추천
 
 **처음 접하는 경우**: `ptr/vllm_padded_decode → ptr/vllm_split → ptr/vllm_paged`
