@@ -1,0 +1,21 @@
+[project]
+name = "my-flashattn-backend"
+version = "0.1.0"
+description = "vLLM AttentionBackend plugin — FlashAttention-backed attention (educational, sibling of vllm_attn/flashinfer and vllm_attn/ptr/vllm_unified)"
+requires-python = ">=3.10"
+dependencies = [
+    "vllm==0.19.1",
+    "torch",
+]
+# NOTE: do NOT add flash-attn (PyPI) here — there is no sm_120 wheel for it.
+# flash_attn_varlen_func comes from vllm.vllm_flash_attn, bundled with vLLM.
+
+[project.entry-points."vllm.general_plugins"]
+my_flashattn_backend = "flash_attn_attention_backend:register"
+
+[tool.setuptools]
+py-modules = ["flash_attn_attention_backend"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"

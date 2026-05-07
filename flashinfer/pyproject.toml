@@ -1,0 +1,20 @@
+[project]
+name = "my-flashinfer-backend"
+version = "0.1.0"
+description = "vLLM AttentionBackend plugin — FlashInfer-backed attention (educational, sibling of vllm_attn/ptr/vllm_unified)"
+requires-python = ">=3.10"
+dependencies = [
+    "vllm==0.19.1",
+    "flashinfer-python>=0.2.0",
+    "torch",
+]
+
+[project.entry-points."vllm.general_plugins"]
+my_flashinfer_backend = "flashinfer_attention_backend:register"
+
+[tool.setuptools]
+py-modules = ["flashinfer_attention_backend"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
