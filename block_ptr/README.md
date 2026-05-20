@@ -1,6 +1,6 @@
 # vllm_attn — block_ptr 변형
 
-`vllm_attn`의 6단계 학습용 저장소를 미러링한 변형. **유일한 차이는 Triton 커널이
+`vllm_attn`의 6단계 학습용 저장소를 미러링한 변형 (+ side branch 1개: `vllm_split_v2`). **유일한 차이는 Triton 커널이
 raw pointer arithmetic 대신 `triton.language.make_block_ptr`(tile I/O 전용)을
 쓴다는 것**이다. 그 외 단계 구분·인터페이스·smoke test 결과·plugin entry point
 등록 방식은 모두 `vllm_attn`과 동일.
@@ -71,6 +71,7 @@ vllm_varlen           seq-aligned flat grid + find_seq_idx binary search (vLLM v
 |---|---|---|
 | [vllm_padded_decode](./vllm_padded_decode/) | prefill 커널 하나로 decode 까지 처리 (q zero-pad 트릭) | 없음 (non-paged) |
 | [vllm_split](./vllm_split/) | decode 전용 커널 추가, backend 에서 Python gather | 없음 (non-paged) |
+| [vllm_split_v2](./vllm_split_v2/) | split-KV decode 커널 추가 (FlashDecoding-style), prefill 커널과 알고리즘 수학은 vllm_split과 동일. side branch — 메인 6단계 외 variant. | 없음 (non-paged) |
 | [vllm_paged](./vllm_paged/) | 커널이 `block_table` 로 paged KV 직접 인덱싱 | **`BLOCK_N == BLOCK_SIZE`** 강제 (loop 내 fresh `make_block_ptr`) |
 | [vllm_multiseq](./vllm_multiseq/) | Backend 가 prefill/decode 그룹 분할 → 각 커널을 multi-seq batch 로 호출 | 동일 |
 | [vllm_unified](./vllm_unified/) | 커널 1개가 prefill/decode/chunked 모두 처리 | 동일 + 커널에 `total_q_tokens` 인자 추가 |
@@ -200,6 +201,7 @@ vllm_paged/NOTES.md
 vllm_multiseq/NOTES.md
 vllm_unified/NOTES.md
 vllm_varlen/NOTES.md
+vllm_split_v2/NOTES.md           (side branch — split-KV decode)
 ```
 
 각 NOTES.md는 vllm_attn 의 동명 NOTES와 본문이 동일하고, 끝에 "Block-pointer

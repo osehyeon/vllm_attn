@@ -15,7 +15,10 @@ vllm_attn/
 │   ├── vllm_paged/
 │   ├── vllm_multiseq/
 │   ├── vllm_unified/
-│   └── vllm_varlen/
+│   ├── vllm_varlen/
+│   ├── vllm_split_v2/            # side branch — split-KV decode (FlashDecoding 방식)
+│   ├── vllm_split_v3/            # side branch — chunked prefill 일반화 (절대 위치 causal)
+│   └── kernel_unification.md     # 심화 자료 — multiseq→unified 통합 메커니즘 해부
 ├── block_ptr/                    # tl.make_block_ptr 표현 (같은 6단계)
 │   ├── vllm_padded_decode/
 │   ├── vllm_split/
@@ -23,11 +26,15 @@ vllm_attn/
 │   ├── vllm_multiseq/
 │   ├── vllm_unified/
 │   ├── vllm_varlen/
+│   ├── vllm_split_v2/            # side branch — split-KV decode (ptr/vllm_split_v2 대응)
 │   ├── README.md                 # block_ptr 변형 자체의 안내 + caveat
 │   ├── BLOCK_PTR_MIGRATION.md    # ptr → block_ptr 변환에서 어려웠던 점
 │   └── ptr_vs_block_ptr_examples.ipynb   # 두 표현의 1:1 교환 가능성 사례
+├── flashattn/                    # side track — alternative backend (Flash Attention)
+├── flashinfer/                   # side track — alternative backend (FlashInfer)
+├── flexattn/                     # side track — alternative backend (PyTorch FlexAttention)
 ├── colab_smoke_test.sh           # Colab 등 GPU 환경에서 12개 커널 일괄 검증
-└── colab_smoke_test.log          # 위 sh 의 참고 실행 결과 (Tesla T4, 12/12 PASS)
+└── colab_smoke_test.log          # GPU 실행 후 생성, repo에 포함 안 됨 — .gitignore
 ```
 
 모든 구현은 **Triton 커널** 로, Qwen3-0.6B 위에서 vLLM 의 공식
@@ -82,6 +89,28 @@ vllm_varlen           seq-aligned flat grid + find_seq_idx binary search (vLLM v
 | paged → multiseq | multi-seq batch dispatch |
 | multiseq → unified | 두 커널을 수학적으로 통합 (절대 위치 mask) |
 | unified → varlen | grid 를 token-flat 으로 전환 + find_seq_idx |
+
+---
+
+## Side branches (메인 6단계에서 갈라진 variant)
+
+메인 6단계 로드맵은 그대로 두되, 특정 기술 축 하나만 바꿔 보는 실험 브랜치들.
+
+- **`ptr/vllm_split_v2` / `block_ptr/vllm_split_v2`** — **decode schedule 변형**: FlashDecoding 방식의 split-KV decode 커널 추가. prefill 커널과 커널 수학은 `vllm_split`과 동일하고 decode 단계의 KV 분할·reduction 방식만 다름. ptr/block_ptr 양쪽에 대응체가 있어 두 표현 비교도 가능. (`ptr/vllm_split_v2/NOTES.md` 참조)
+
+- **`ptr/vllm_split_v3`** (ptr only) — **prefill math 변형**: causal mask를 상대 위치에서 절대 위치로 일반화하여 chunked prefill을 수용. decode 커널은 `vllm_split`과 동일. `block_ptr` 대응체는 의도적으로 없음 — 수학 축 변경은 메모리 접근 표현(idiom)과 직교하므로 ptr에서만 검증. (`ptr/vllm_split_v3/NOTES.md` 참조)
+
+---
+
+## Side tracks (alternative attention backends)
+
+`flashattn/`, `flashinfer/`, `flexattn/` 세 디렉토리는 vLLM 의 동일한 `AttentionBackend` 인터페이스를 따르되, Triton으로 직접 작성한 커널 대신 **외부 라이브러리(Flash Attention, FlashInfer, PyTorch FlexAttention)로 본체를 교체**한 비교군이다.
+
+ptr/block_ptr이 "Triton 메모리 접근 표현의 두 축"인 데 반해, 사이드 트랙은 "Triton 외 라이브러리로 커널 본체를 바꾸는" 직교 축이다. 각 디렉토리의 `NOTES.md`에 `vllm_unified` vs flashinfer vs flashattn vs flexattn 4-way 비교표가 있으므로, 여기서는 표를 중복하지 않고 링크만 제공.
+
+- **`flashattn/`** — Flash Attention 라이브러리를 백엔드로 사용. ([`flashattn/NOTES.md`](./flashattn/NOTES.md))
+- **`flashinfer/`** — FlashInfer 라이브러리를 백엔드로 사용. ([`flashinfer/NOTES.md`](./flashinfer/NOTES.md))
+- **`flexattn/`** — PyTorch FlexAttention을 백엔드로 사용. ([`flexattn/NOTES.md`](./flexattn/NOTES.md))
 
 ---
 
@@ -145,6 +174,8 @@ bash colab_smoke_test.sh
 (torch 2.10.0+cu128, triton 3.6.0) 에서 12/12 PASS. `block_ptr/vllm_paged` 의
 `prefill/BS=8` 한 케이스만 의도적 SKIP (block_ptr prefill 의 `BLOCK_SIZE >= 16`
 제약 — `block_ptr/BLOCK_PTR_MIGRATION.md` §10 참조).
+
+> **참고**: side branch(`vllm_split_v2`, `vllm_split_v3`)와 side track(`flashattn`, `flexattn`, `flashinfer`)은 `colab_smoke_test.sh` 대상이 아니다. 각 디렉토리에서 개별 실행.
 
 ### VS Code / Cursor 에서
 
@@ -368,6 +399,25 @@ block_ptr/vllm_paged/NOTES.md
 block_ptr/vllm_multiseq/NOTES.md
 block_ptr/vllm_unified/NOTES.md
 block_ptr/vllm_varlen/NOTES.md
+```
+
+side branch:
+```
+ptr/vllm_split_v2/NOTES.md          (decode schedule 변형 — FlashDecoding split-KV)
+ptr/vllm_split_v3/NOTES.md          (prefill math 변형 — chunked prefill 수용)
+block_ptr/vllm_split_v2/NOTES.md    (ptr/vllm_split_v2 의 block_ptr 대응체)
+```
+
+심화 자료:
+```
+ptr/kernel_unification.md           (multiseq→unified 통합 메커니즘 해부, 495행)
+```
+
+side track:
+```
+flashattn/NOTES.md                  (Flash Attention 백엔드 — 4-way 비교표 포함)
+flashinfer/NOTES.md                 (FlashInfer 백엔드 — 4-way 비교표 포함)
+flexattn/NOTES.md                   (PyTorch FlexAttention 백엔드 — 4-way 비교표 포함)
 ```
 
 코드보다 NOTES 먼저 읽으면 이해가 빠름.
